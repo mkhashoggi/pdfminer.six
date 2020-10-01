@@ -1,5 +1,6 @@
 import heapq
 import logging
+from operator import attrgetter
 
 from .utils import INF
 from .utils import Plane
@@ -42,6 +43,12 @@ class LAParams:
         than this margin then they are considered to be two separate words, and
         an intermediate space will be added for readability. The margin is
         specified relative to the width of the character.
+    :param detect_subscripts: If this set to True then PDFMiner will try
+        to detect subscripts charecters. Default value is False.
+    :param subscript_margin: If the baselines of a character is different by
+        this margin then the charecter with the largest size in this line then
+        this charecter is set as a subscript. The margin is
+        specified relative to the size of the largest charecter in size.
     :param line_margin: If two lines are are close together they are
         considered to be part of the same paragraph. The margin is
         specified relative to the height of a line.
@@ -60,6 +67,8 @@ class LAParams:
     def __init__(self,
                  line_overlap=0.5,
                  char_margin=2.0,
+                 detect_subscripts=False,
+                 subscript_margin=0.1,
                  line_margin=0.5,
                  word_margin=0.1,
                  boxes_flow=0.5,
@@ -67,6 +76,8 @@ class LAParams:
                  all_texts=False):
         self.line_overlap = line_overlap
         self.char_margin = char_margin
+        self.detect_subscripts = detect_subscripts
+        self.subscript_margin = subscript_margin
         self.line_margin = line_margin
         self.word_margin = word_margin
         self.boxes_flow = boxes_flow
@@ -289,6 +300,7 @@ class LTChar(LTComponent, LTText):
         self.ncs = ncs
         self.graphicstate = graphicstate
         self.adv = textwidth * fontsize * scaling
+        self.is_subscript = False
         # compute the boundary rectangle.
         if font.is_vertical():
             # vertical
@@ -327,7 +339,15 @@ class LTChar(LTComponent, LTText):
                  self.get_text()))
 
     def get_text(self):
-        return self._text
+        if self.is_subscript:
+            return "<s>{}</s>".format(self._text)
+        else:
+            return self._text
+
+    def set_subscript(self):
+        """Set the current LTChar as subscript."""
+        self.is_subscript = True
+        return
 
     def is_compatible(self, obj):
         """Returns True if two characters can coexist in the same line."""
@@ -383,7 +403,7 @@ class LTTextContainer(LTExpandableContainer, LTText):
 
     def get_text(self):
         return ''.join(obj.get_text() for obj in self
-                       if isinstance(obj, LTText))
+                       if isinstance(obj, LTText)).replace('</s><s>', '')
 
 
 class LTTextLine(LTTextContainer):
@@ -403,8 +423,27 @@ class LTTextLine(LTTextContainer):
                 (self.__class__.__name__, bbox2str(self.bbox),
                  self.get_text()))
 
+    def detect_subscripts(self, laparams):
+        """Flags super/subscripts in text"""
+        ref_char = max([char for char in self._objs
+                        if isinstance(char, LTChar)], key=attrgetter('size'))
+        if isinstance(self, LTTextLineHorizontal):
+            baseline = ref_char.matrix[-1]
+        elif isinstance(self, LTTextLineVertical):
+            baseline = ref_char.matrix[-2]
+        tol = laparams.subscript_margin * ref_char.size
+        for c in [char for char in self._objs if isinstance(char, LTChar)]:
+            if ((isinstance(self, LTTextLineHorizontal)
+               and abs(c.matrix[-1] - baseline) > tol)
+               or (isinstance(self, LTTextLineVertical)
+               and abs(c.matrix[-2] - baseline) > tol)):
+                c.set_subscript()
+        return
+
     def analyze(self, laparams):
         LTTextContainer.analyze(self, laparams)
+        if laparams.detect_subscripts:
+            self.detect_subscripts(laparams)
         LTContainer.add(self, LTAnno('\n'))
         return
 
